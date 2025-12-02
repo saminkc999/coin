@@ -14,6 +14,7 @@ import RecentEntriesTable, { GameEntry } from "./RecentEntriesTable";
 import PaymentCombinedTable from "./PaymentCombinedTable";
 import PendingPayments from "./PendingPaymentsTable";
 import GameLogins from "../admin/GameLogin";
+import GameLoginsTable from "./GameLoginsTable";
 // ✅ NEW
 
 const GAMES_API = "/api/games";
@@ -218,6 +219,7 @@ const UserDashboard: FC<UserDashboardProps> = ({
                 showAdminTable={false}
                 showUserTable={true}
               />
+              <GameLoginsTable />
             </div>
           )}
 
