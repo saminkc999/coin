@@ -9,7 +9,7 @@ export const API_BASE =
   import.meta.env.VITE_API_BASE_URL ||
   (typeof window !== "undefined" && window.location.hostname === "localhost"
     ? "http://localhost:5000"
-    : "https://coin-backend-production-9573.up.railway.app");
+    : "https://shopie-shimely-production.up.railway.app");
 
 export const apiClient = axios.create({
   baseURL: `${API_BASE}`,
@@ -52,3 +52,4 @@ apiClient.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+// shopie-shimely-production.up.railway.app
