@@ -53,7 +53,7 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
 
     // 1b) Load usernames that were explicitly deleted/ignored
     const deletedRows = await DeletedUsername.find({}, "username").lean(); // NEW
-    const deletedUsernameSet = new Set( // NEW
+    const deletedUsernameSet = new Set(
       deletedRows
         .map((d) => (d.username ? String(d.username).trim() : ""))
         .filter(Boolean)
@@ -101,8 +101,7 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
     // 3) which game usernames are missing in User collection
     //    AND not in DeletedUsername
     const missingUsernames = uniqueGameUsernames.filter(
-      (uname) =>
-        !realUsernameSet.has(uname) && !deletedUsernameSet.has(uname) // NEW
+      (uname) => !realUsernameSet.has(uname) && !deletedUsernameSet.has(uname)
     );
 
     // 4) auto-create missing users (placeholder) with UNIQUE placeholder emails
@@ -289,6 +288,60 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
 });
 
 /**
+ * GET /api/admin/users/approved-basic
+ *
+ * Returns ONLY approved users (status='active' and/or isApproved=true),
+ * excludes placeholder emails (@noemail.local),
+ * and returns just unique { _id, username, email }.
+ */
+router.get("/approved-basic", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const docs = await User.find(
+      {
+        $or: [{ isApproved: true }, { status: "active" }],
+        email: {
+          $ne: null,
+          $not: /@noemail\.local$/i, // exclude placeholder emails
+        },
+      },
+      "username email createdAt"
+    )
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const seenEmails = new Set();
+    const result = [];
+
+    for (const u of docs) {
+      const username = u.username ? String(u.username).trim() : "";
+      const email = u.email ? String(u.email).trim() : "";
+
+      if (!username || !email) continue;
+
+      const emailKey = email.toLowerCase();
+      if (seenEmails.has(emailKey)) {
+        // skip duplicate email rows
+        continue;
+      }
+      seenEmails.add(emailKey);
+
+      result.push({
+        _id: String(u._id),
+        username,
+        email,
+      });
+    }
+
+    return res.json(result);
+  } catch (err) {
+    console.error("Error fetching approved-basic users:", err);
+    return res
+      .status(500)
+      .json({ message: "Failed to fetch approved users (basic)" });
+  }
+});
+
+/**
  * GET /api/admin/users/:username/game-entries
  */
 router.get(
@@ -321,23 +374,36 @@ router.get(
 
 /**
  * PATCH /api/admin/users/:id/approve
+ * Body (optional): { email: "real@gmail.com" }
+ *
+ * When approving:
+ *  - sets isApproved=true and status="active"
+ *  - optionally updates email if provided in body
+ *  - creates a login session
  */
 router.patch("/:id/approve", requireAuth, requireAdmin, async (req, res) => {
   try {
-    const user = await User.findByIdAndUpdate(
-      req.params.id,
-      {
-        isApproved: true,
-        status: "active",
-        lastSignInAt: new Date(),
-      },
-      { new: true }
-    );
+    const { email } = req.body || {};
+
+    const update = {
+      isApproved: true,
+      status: "active",
+      lastSignInAt: new Date(),
+    };
+
+    if (email && typeof email === "string" && email.trim()) {
+      update.email = email.trim();
+    }
+
+    const user = await User.findByIdAndUpdate(req.params.id, update, {
+      new: true,
+    });
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
+    // optional: this creates a login session when approved
     await LoginSession.create({
       username: user.username,
       email: user.email,
@@ -440,7 +506,9 @@ router.delete("/:id", requireAuth, requireAdmin, async (req, res) => {
 
     await User.deleteOne({ _id: id });
 
-    return res.json({ message: "User deleted and username ignored for auto-create" });
+    return res.json({
+      message: "User deleted and username ignored for auto-create",
+    });
   } catch (err) {
     console.error("Error deleting user:", err);
     return res.status(500).json({ message: "Failed to delete user" });

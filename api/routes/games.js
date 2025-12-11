@@ -22,6 +22,7 @@ const router = express.Router();
  *   POST   /api/games/:id/reset-recharge
  *   GET    /api/games/:id/recharge-history  -> full history of deposits for this game
  */
+// GET /api/games
 router.get("/games", async (req, res) => {
   try {
     await connectDB();
@@ -68,7 +69,14 @@ router.get("/games", async (req, res) => {
     const games = await Game.find({}).sort({ createdAt: 1 }).lean();
     const gameNames = games.map((g) => g.name);
 
-    // Aggregate GameEntry totals for these games (filtered by month if applied)
+    /**
+     * Group GameEntry by (gameName, username, date)
+     * For each group (one username, one day, one game):
+     *   freeplaySum, depositSum, redeemSum
+     * Then in JS:
+     *   perDayNet = redeemSum - depositSum - freeplaySum
+     *   netPerGame = Σ perDayNet
+     */
     const totals = await GameEntry.aggregate([
       {
         $match: {
@@ -78,7 +86,11 @@ router.get("/games", async (req, res) => {
       },
       {
         $group: {
-          _id: "$gameName",
+          _id: {
+            gameName: "$gameName",
+            username: "$username",
+            date: "$date", // "YYYY-MM-DD"
+          },
           freeplay: {
             $sum: {
               $cond: [
@@ -110,36 +122,63 @@ router.get("/games", async (req, res) => {
       },
     ]);
 
+    // Build totals per game:
+    // - sum of freeplay/deposit/redeem (for display)
+    // - netPerGame = Σ (redeem - deposit - freeplay) per username per day
     const totalsByGame = {};
     for (const t of totals) {
-      totalsByGame[t._id] = {
-        freeplay: t.freeplay ?? 0,
-        deposit: t.deposit ?? 0,
-        redeem: t.redeem ?? 0,
-      };
+      const gameName = t._id.gameName;
+
+      if (!totalsByGame[gameName]) {
+        totalsByGame[gameName] = {
+          freeplay: 0,
+          deposit: 0, // total coin recharged (sum of deposits)
+          redeem: 0,
+          net: 0, // per-day per-username net
+        };
+      }
+
+      const freeplay = t.freeplay ?? 0;
+      const deposit = t.deposit ?? 0;
+      const redeem = t.redeem ?? 0;
+
+      const g = totalsByGame[gameName];
+      g.freeplay += freeplay;
+      g.deposit += deposit;
+      g.redeem += redeem;
+
+      // per-day-per-username net: redeem - deposit - freeplay
+      const perDayNet = redeem - deposit - freeplay;
+      g.net += perDayNet;
     }
 
-    // Merge totals into game objects
+    // Merge totals into game objects, with totalCoins based on net
     const enriched = games.map((g) => {
       const s = totalsByGame[g.name] || {
         freeplay: 0,
         deposit: 0,
         redeem: 0,
+        net: 0,
       };
 
       const coinsRecharged = Number(g.coinsRecharged) || 0;
 
-      // totalCoins = redeemed – deposit – freeplay + recharge
-      let totalCoins = coinsRecharged + s.redeem - s.deposit - s.freeplay;
+      // totalCoins = recharge + Σ(per-day-per-username net)
+      // net = redeem - deposit - freeplay
+      let totalCoins = coinsRecharged + s.net;
       if (totalCoins < 0) totalCoins = 0;
+
+      // separate field for total coin recharged (sum of deposits)
+      const totalRecharged = s.deposit;
 
       return {
         ...g,
         freeplay: s.freeplay,
         deposit: s.deposit,
         redeem: s.redeem,
-        coinsRecharged,
-        totalCoins,
+        totalRecharged, // 👈 total coin recharged (for separate table/column)
+        coinsRecharged, // manual/base recharge from Game model
+        totalCoins, // final net coins according to your rule
       };
     });
 
