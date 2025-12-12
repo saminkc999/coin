@@ -46,7 +46,7 @@ const UserAdminTable: FC<UserAdminTableProps> = ({ onViewHistory }) => {
     setError("");
     try {
       const { data } = await apiClient.get<UserSummary[]>(
-        "/api/admin/users/approved-basic"
+        "/api/admin/users"
       );
 
       const safeData = Array.isArray(data) ? data : [];
