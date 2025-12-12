@@ -7,7 +7,7 @@ interface UserSessionBarProps {
   username: string;
   email?: string;
   onLogout: () => void;
-  onSessionChange?: (isSignedIn: boolean) => void; // ✅ NEW
+  onSessionChange?: (isSignedIn: boolean) => void;
 }
 
 const LOGIN_API_BASE = "/api/logins";
@@ -26,6 +26,10 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
 
   const [showConfirmLogout, setShowConfirmLogout] = useState(false);
 
+  // ✅ Canonical display identity (from session start response / storage)
+  const [displayUser, setDisplayUser] = useState(username);
+  const [displayEmail, setDisplayEmail] = useState<string | undefined>(email);
+
   // 🕒 Live clock
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
@@ -38,32 +42,39 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
     if (!saved) return;
 
     try {
-      const parsed = JSON.parse(saved) as {
-        id?: string;
-        sessionId?: string;
-        signInAt?: string;
-        user?: string;
-        email?: string;
-      };
+      const parsed = JSON.parse(saved);
 
       const storedUser = parsed.user;
       const storedSignInAt = parsed.signInAt;
       const storedId = parsed.id || parsed.sessionId || null;
       const storedEmail = parsed.email;
 
+      // match by email if possible, otherwise username
+      const emailKey = email || localStorage.getItem("userEmail") || "";
+      const sameEmail = !emailKey || storedEmail === emailKey;
       const sameUser = storedUser === username;
-      const sameEmail = !email || storedEmail === email;
 
-      if (sameUser && sameEmail && storedSignInAt) {
+      if ((sameEmail || sameUser) && storedSignInAt) {
         setSessionId(storedId);
         setSignInDateTime(new Date(storedSignInAt));
         setIsSignedIn(true);
-        onSessionChange?.(true); // ✅ tell parent
+
+        // ✅ use canonical values stored
+        if (storedUser) setDisplayUser(storedUser);
+        if (storedEmail) setDisplayEmail(storedEmail);
+
+        onSessionChange?.(true);
       }
     } catch {
       localStorage.removeItem("userSession");
     }
   }, [username, email, onSessionChange]);
+
+  // Keep display values in sync when props change (fallback)
+  useEffect(() => {
+    setDisplayUser((prev) => prev || username);
+    setDisplayEmail((prev) => prev || email);
+  }, [username, email]);
 
   const formattedTime = now.toLocaleTimeString([], {
     hour: "2-digit",
@@ -101,28 +112,44 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
       setLoading(true);
       const signInAt = new Date().toISOString();
 
+      // ✅ backend /api/logins/start expects EMAIL (canonical username comes from DB)
+      const effectiveEmail = email || localStorage.getItem("userEmail") || "";
+      if (!effectiveEmail) {
+        alert("Missing email. Please login again.");
+        return;
+      }
+
       const { data } = await apiClient.post(`${LOGIN_API_BASE}/start`, {
-        username,
-        email,
+        email: effectiveEmail,
         signInAt,
       });
 
-      const id: string | undefined =
-        data.id || data._id || data.sessionId || data.session_id;
+      const id =
+        data.id || data._id || data.sessionId || data.session_id || null;
+
+      // ✅ canonical identity from backend
+      const canonicalUsername = data.username || username;
+      const canonicalEmail = data.email || effectiveEmail;
 
       const sessionData = {
-        id: id || null,
-        sessionId: id || null,
+        id,
+        sessionId: id,
         signInAt,
-        user: username,
-        email: email || null,
+        user: canonicalUsername,
+        email: canonicalEmail,
       };
 
       localStorage.setItem("userSession", JSON.stringify(sessionData));
-      setSessionId(id || null);
+
+      setSessionId(id);
       setIsSignedIn(true);
       setSignInDateTime(new Date(signInAt));
-      onSessionChange?.(true); // ✅ tell parent
+
+      // ✅ update displayed identity
+      setDisplayUser(canonicalUsername);
+      setDisplayEmail(canonicalEmail);
+
+      onSessionChange?.(true);
     } catch (err) {
       console.error("Failed to sign in:", err);
       alert("Failed to start session. Check console or backend.");
@@ -149,8 +176,8 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
       setSignInDateTime(null);
       setSessionId(null);
       localStorage.removeItem("userSession");
-      onSessionChange?.(false); // ✅ tell parent work session ended
-      onLogout(); // 🔥 fully log out (JWT) too
+      onSessionChange?.(false);
+      onLogout();
     } catch (err) {
       console.error("Failed to sign out:", err);
       alert("Failed to end session. Check console or backend.");
@@ -163,11 +190,8 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
   // Toggle button
   const handleClickToggle = () => {
     if (loading) return;
-    if (isSignedIn) {
-      setShowConfirmLogout(true);
-    } else {
-      void handleSignIn();
-    }
+    if (isSignedIn) setShowConfirmLogout(true);
+    else void handleSignIn();
   };
 
   // ⏱️ AUTO TIMEOUT: sign out after 30 minutes
@@ -196,7 +220,6 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
 
   return (
     <>
-      {/* TOP BAR (unchanged visually) */}
       <div className="w-full bg-gradient-to-r from-white via-slate-50 to-slate-100 border-b border-slate-200 shadow-sm">
         <div className="mx-auto px-4 sm:px-6 py-3 flex items-center gap-2">
           {/* LEFT: Clock */}
@@ -233,14 +256,14 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
                   </div>
                   <span className="text-slate-500">
                     <span className="font-semibold text-slate-700">
-                      {username}
+                      {displayUser}
                     </span>{" "}
                     signed in on {signInDateStr}
                   </span>
                 </div>
-                {email && (
+                {displayEmail && (
                   <span className="text-[10px] text-slate-500">
-                    Email: <span className="font-medium">{email}</span>
+                    Email: <span className="font-medium">{displayEmail}</span>
                   </span>
                 )}
               </div>
@@ -278,7 +301,7 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
         </div>
       </div>
 
-      {/* LOGOUT CONFIRM MODAL (unchanged) */}
+      {/* LOGOUT CONFIRM MODAL */}
       {showConfirmLogout && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm">
           <div className="bg-white w-full max-w-sm mx-4 rounded-2xl shadow-xl border border-slate-200 p-5">
@@ -287,11 +310,13 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
             </h2>
             <p className="text-xs text-slate-500 mb-4">
               You are currently signed in as{" "}
-              <span className="font-semibold text-slate-800">{username}</span>
-              {email && (
+              <span className="font-semibold text-slate-800">
+                {displayUser}
+              </span>
+              {displayEmail && (
                 <>
                   {" "}
-                  (<span className="text-slate-700">{email}</span>)
+                  (<span className="text-slate-700">{displayEmail}</span>)
                 </>
               )}
               . Your work log for this session will be closed after you sign
