@@ -55,6 +55,8 @@ router.get("/ping", (_req, res) => {
  * Body: { email, signInAt? }
  * Records login ONLY if user is approved.
  * Uses canonical username/email from User document.
+ *
+ * ✅ FIX: ensure only ONE active session per user by closing older open sessions.
  */
 router.post("/start", async (req, res) => {
   try {
@@ -69,7 +71,6 @@ router.post("/start", async (req, res) => {
 
     // 1️⃣ Find the user by EMAIL (matches your frontend login)
     const user = await User.findOne({ email: rawEmail }).lean();
-
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -90,11 +91,19 @@ router.post("/start", async (req, res) => {
       });
     }
 
-    // 3️⃣ Create session with canonical values from DB
+    // ✅ 3️⃣ Close any previous OPEN sessions for this user
+    // (prevents multiple signOutAt: null sessions)
+    await LoginSession.updateMany(
+      { username: user.username, signOutAt: null },
+      { $set: { signOutAt: new Date() } }
+    );
+
+    // 4️⃣ Create session with canonical values from DB
     const session = await LoginSession.create({
       username: user.username, // ✅ always DB username
       email: user.email, // ✅ always DB email
       signInAt: signInAt ? new Date(signInAt) : new Date(),
+      signOutAt: null, // ✅ explicit (keeps query consistent)
     });
 
     return res.status(201).json(formatSession(session));

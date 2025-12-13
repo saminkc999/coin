@@ -64,7 +64,7 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
         .filter(Boolean)
     );
 
-    // 3) Collect usernames ONLY from GameEntry.username
+    // 3) Collect usernames ONLY from GameEntry.username (trim-safe)
     const gameUserAgg = await GameEntry.aggregate([
       { $match: { username: { $ne: null, $ne: "" } } },
       { $group: { _id: { $trim: { input: "$username" } } } },
@@ -128,12 +128,13 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
       .map((u) => (u.username ? String(u.username).trim() : ""))
       .filter(Boolean);
 
-    // 6) Totals (username ONLY)
+    // 6) Totals (username ONLY, trim-safe)
     const totalsAgg = await GameEntry.aggregate([
-      { $match: { username: { $in: usernames } } },
+      { $addFields: { usernameTrim: { $trim: { input: "$username" } } } },
+      { $match: { usernameTrim: { $in: usernames } } },
       {
         $group: {
-          _id: "$username",
+          _id: "$usernameTrim",
           totalDeposit: {
             $sum: {
               $cond: [
@@ -174,13 +175,14 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
       };
     }
 
-    // 7) Latest login sessions (match by username only)
+    // 7) Latest login sessions (trim-safe, newest per user)
     const sessionsAgg = await LoginSession.aggregate([
-      { $match: { username: { $in: usernames } } },
+      { $addFields: { usernameTrim: { $trim: { input: "$username" } } } },
+      { $match: { usernameTrim: { $in: usernames } } },
       { $sort: { signInAt: -1 } },
       {
         $group: {
-          _id: "$username",
+          _id: "$usernameTrim",
           lastSignInAt: { $first: "$signInAt" },
           lastSignOutAt: { $first: "$signOutAt" },
         },
@@ -194,14 +196,18 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
 
     // 8) Merge
     const enhanced = users.map((u) => {
-      const totals = totalsByUser[u.username] || {
+      const uname = u.username ? String(u.username).trim() : "";
+
+      const totals = totalsByUser[uname] || {
         totalDeposit: 0,
         totalRedeem: 0,
         totalFreeplay: 0,
       };
 
-      const session = sessionsByUser[u.username];
-      const isOnline = session?.lastSignInAt && !session?.lastSignOutAt;
+      const session = sessionsByUser[uname];
+      const isOnline = Boolean(
+        session?.lastSignInAt && !session?.lastSignOutAt
+      );
 
       return {
         ...u,
@@ -209,7 +215,7 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
         totalPayments: totals.totalRedeem || 0,
         lastSignInAt: session?.lastSignInAt || null,
         lastSignOutAt: session?.lastSignOutAt || null,
-        isOnline: Boolean(isOnline),
+        isOnline,
       };
     });
 
@@ -219,6 +225,7 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
     return res.status(500).json({ message: "Failed to fetch users" });
   }
 });
+
 // ✅ APPROVE USER
 // PATCH /api/admin/users/:id/approve
 router.patch("/:id/approve", requireAuth, requireAdmin, async (req, res) => {
