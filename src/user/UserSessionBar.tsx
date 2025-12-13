@@ -1,5 +1,5 @@
 // src/UserSessionBar.tsx
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { LogIn, LogOut, Clock } from "lucide-react";
 import { apiClient } from "../apiConfig";
 
@@ -29,6 +29,10 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
   // ✅ Canonical display identity (from session start response / storage)
   const [displayUser, setDisplayUser] = useState(username);
   const [displayEmail, setDisplayEmail] = useState<string | undefined>(email);
+
+  // ✅ Hard locks to prevent double POSTs (React state updates are async)
+  const signInLockRef = useRef(false);
+  const signOutLockRef = useRef(false);
 
   // 🕒 Live clock
   useEffect(() => {
@@ -107,17 +111,24 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
     : null;
 
   // 🟢 SIGN IN handler (work session)
-  const handleSignIn = async () => {
-    try {
-      setLoading(true);
-      const signInAt = new Date().toISOString();
+  const handleSignIn = useCallback(async () => {
+    // ✅ Hard guards (not dependent on state timing)
+    if (signInLockRef.current) return;
+    if (loading) return;
+    if (isSignedIn || sessionId) return;
 
-      // ✅ backend /api/logins/start expects EMAIL (canonical username comes from DB)
-      const effectiveEmail = email || localStorage.getItem("userEmail") || "";
-      if (!effectiveEmail) {
-        alert("Missing email. Please login again.");
-        return;
-      }
+    // ✅ backend /api/logins/start expects EMAIL
+    const effectiveEmail = email || localStorage.getItem("userEmail") || "";
+    if (!effectiveEmail) {
+      alert("Missing email. Please login again.");
+      return;
+    }
+
+    try {
+      signInLockRef.current = true;
+      setLoading(true);
+
+      const signInAt = new Date().toISOString();
 
       const { data } = await apiClient.post(`${LOGIN_API_BASE}/start`, {
         email: effectiveEmail,
@@ -155,14 +166,18 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
       alert("Failed to start session. Check console or backend.");
     } finally {
       setLoading(false);
+      signInLockRef.current = false;
     }
-  };
+  }, [email, username, onSessionChange, loading, isSignedIn, sessionId]);
 
   // 🔴 SIGN OUT handler: ends work session + logs out app
   const handleConfirmSignOut = useCallback(async () => {
+    // ✅ Hard guards
+    if (signOutLockRef.current) return;
     if (loading) return;
 
     try {
+      signOutLockRef.current = true;
       setLoading(true);
 
       if (sessionId) {
@@ -184,6 +199,7 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
     } finally {
       setLoading(false);
       setShowConfirmLogout(false);
+      signOutLockRef.current = false;
     }
   }, [loading, sessionId, onLogout, onSessionChange]);
 
@@ -191,7 +207,7 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
   const handleClickToggle = () => {
     if (loading) return;
     if (isSignedIn) setShowConfirmLogout(true);
-    else void handleSignIn();
+    else handleSignIn();
   };
 
   // ⏱️ AUTO TIMEOUT: sign out after 30 minutes
