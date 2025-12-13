@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import axios, { AxiosError } from "axios";
 import { API_BASE } from "./apiConfig";
-import { showToast } from "./Toast"; // ✅ Import toast helper
+import { showToast } from "./Toast";
 
 interface RegisterFormProps {
   onSwitchToLogin: () => void;
@@ -12,7 +12,7 @@ const RegisterForm: React.FC<RegisterFormProps> = ({
   onSwitchToLogin,
   onSuccess,
 }) => {
-  const [name, setName] = useState("");
+  const [userName, setUserName] = useState(""); // ✅ fixed naming
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -28,13 +28,14 @@ const RegisterForm: React.FC<RegisterFormProps> = ({
     if (password !== confirmPassword) {
       const msg = "Passwords do not match";
       setError(msg);
-      showToast.error(msg); // ❌ toast
+      showToast.error(msg);
       return;
     }
+
     if (password.length < 6) {
       const msg = "Password must be at least 6 characters";
       setError(msg);
-      showToast.error(msg); // ❌ toast
+      showToast.error(msg);
       return;
     }
 
@@ -43,49 +44,49 @@ const RegisterForm: React.FC<RegisterFormProps> = ({
     try {
       const { data } = await axios.post(
         `${API_BASE}/api/auth/register`,
-        { name, email, password },
+        { UserName: userName.trim(), email: email.trim(), password }, // ✅ keep backend field UserName
         { headers: { "Content-Type": "application/json" } }
       );
 
-      const user = data.user;
+      const user = data?.user;
 
       const requiresApproval =
-        data.requiresApproval === true ||
+        data?.requiresApproval === true ||
         user?.isApproved === false ||
         user?.status === "pending";
 
       if (requiresApproval) {
         const msg = "Account created. Waiting for admin approval before login.";
         setSuccess(msg);
-        showToast.info(msg); // ℹ️ toast
-
+        showToast.info(msg);
         return;
       }
 
       // --- Immediate auto-login for approved accounts ---
-      if (data.token) {
-        localStorage.setItem("token", data.token);
-      }
-      if (data.user?.role) {
-        localStorage.setItem("role", data.user.role);
-      }
+      if (data?.token) localStorage.setItem("token", data.token);
+      if (user?.role) localStorage.setItem("role", user.role);
+      if (user?.email) localStorage.setItem("userEmail", user.email); // ✅ used by sessions
 
-      const username =
-        data.user?.name || name.trim() || email.split("@")[0] || "New User";
+      const resolvedUsername =
+        user?.username ||
+        user?.name ||
+        userName.trim() ||
+        email.split("@")[0] ||
+        "New User";
 
-      showToast.success("Account created successfully!"); // ✅ toast
-      onSuccess(username);
+      showToast.success("Account created successfully!");
+      onSuccess(resolvedUsername);
     } catch (err) {
       console.error("❌ Register failed:", err);
       const axiosErr = err as AxiosError<any>;
 
-      let msg =
+      const msg =
         axiosErr.response?.data?.message ||
         axiosErr.message ||
         "Unexpected error during registration.";
 
       setError(msg);
-      showToast.error(msg); // ❌ toast
+      showToast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -105,8 +106,8 @@ const RegisterForm: React.FC<RegisterFormProps> = ({
           type="text"
           className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
           placeholder="e.g. Alex Sharma"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
+          value={userName}
+          onChange={(e) => setUserName(e.target.value)} // ✅ fixed setter
           required
         />
       </div>

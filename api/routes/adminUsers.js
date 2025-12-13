@@ -8,6 +8,21 @@ import DeletedUsername from "../models/DeletedUsername.js";
 
 const router = express.Router();
 
+// ✅ helpers
+const normUsernameKey = (v) =>
+  String(v || "")
+    .trim()
+    .toLowerCase();
+
+const emailLocalFromUsername = (uname) =>
+  String(uname || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[^a-z0-9]/g, "");
+
+const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /**
  * GET /api/admin/users
  * Optional: ?status=pending | active | blocked
@@ -19,9 +34,11 @@ const router = express.Router();
  * ✅ Hide virtual users when ?status=active (so approved list stays clean)
  *
  * Fix:
- * ✅ Prevent duplicate virtual users/emails caused by case/whitespace/punctuation variants
- *   - Treat usernames as case-insensitive for "missing user" detection
- *   - More stable email local-part normalization
+ * ✅ "take this username as" = treat usernames case-insensitively everywhere
+ *   - missing detection uses lower-case key
+ *   - DeletedUsername uses lower-case key
+ *   - approve/delete virtual works even if case differs
+ * ✅ more stable virtual emails
  */
 router.get("/", requireAuth, requireAdmin, async (req, res) => {
   try {
@@ -30,7 +47,7 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
     const baseUserQuery = {};
     if (status) baseUserQuery.status = status;
 
-    // If admin is viewing ACTIVE users, exclude virtual placeholder emails automatically
+    // Hide virtual placeholder emails when viewing ACTIVE users
     const excludeVirtualForActive =
       status === "active" || status === "blocked" || status === "pending";
 
@@ -53,11 +70,8 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
       .map((u) => (u.username ? String(u.username).trim() : ""))
       .filter(Boolean);
 
-    // ✅ case-sensitive set (for output) + case-insensitive set (for dedupe)
-    const realUsernameSet = new Set(realUsernames);
-    const realUsernameLowerSet = new Set(
-      realUsernames.map((u) => u.toLowerCase())
-    );
+    // ✅ case-insensitive set for dedupe
+    const realUsernameLowerSet = new Set(realUsernames.map(normUsernameKey));
 
     const existingEmails = new Set(
       allUsers
@@ -65,12 +79,10 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
         .filter(Boolean)
     );
 
-    // 2) Deleted usernames (ignored forever) — treat case-insensitively
+    // 2) Deleted usernames (ignored forever) — store/compare as lowercase keys
     const deletedRows = await DeletedUsername.find({}, "username").lean();
     const deletedUsernameLowerSet = new Set(
-      deletedRows
-        .map((d) => (d.username ? String(d.username).trim().toLowerCase() : ""))
-        .filter(Boolean)
+      deletedRows.map((d) => normUsernameKey(d.username)).filter(Boolean)
     );
 
     // 3) Collect usernames ONLY from GameEntry.username (trim-safe)
@@ -83,12 +95,20 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
       .map((r) => (r._id ? String(r._id).trim() : ""))
       .filter(Boolean);
 
-    const uniqueGameUsernames = [...new Set(gameUsernames)];
+    // ✅ de-dupe case-insensitively, but keep a "display" version
+    const seenKeys = new Set();
+    const uniqueGameUsernames = [];
+    for (const uname of gameUsernames) {
+      const key = normUsernameKey(uname);
+      if (!key) continue;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      uniqueGameUsernames.push(String(uname).trim()); // keep original display
+    }
 
-    // 4) Auto-create missing users (virtual users only)
-    // ✅ Fix: case-insensitive missing detection (prevents duplicates like "Prasis" vs "prasis")
+    // 4) Auto-create missing users (virtual users only) — case-insensitive check
     const missingUsernames = uniqueGameUsernames.filter((u) => {
-      const key = String(u).trim().toLowerCase();
+      const key = normUsernameKey(u);
       return (
         !realUsernameLowerSet.has(key) && !deletedUsernameLowerSet.has(key)
       );
@@ -99,15 +119,11 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
 
       for (const uname of missingUsernames) {
         const clean = String(uname).trim();
-        if (!clean) continue;
+        const key = normUsernameKey(clean);
+        if (!clean || !key) continue;
 
-        // ✅ stable email local-part normalization to reduce collisions
-        const baseLocal = clean
-          .toLowerCase()
-          .trim()
-          .replace(/\s+/g, "")
-          .replace(/[^a-z0-9]/g, "");
-
+        // ✅ base local-part
+        const baseLocal = emailLocalFromUsername(clean);
         if (!baseLocal) continue;
 
         let email = `${baseLocal}@noemail.local`;
@@ -119,13 +135,10 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
         }
 
         existingEmails.add(email);
-
-        // add to both sets so next iterations won't create dupes
-        realUsernameSet.add(clean);
-        realUsernameLowerSet.add(clean.toLowerCase());
+        realUsernameLowerSet.add(key);
 
         docs.push({
-          username: clean,
+          username: clean, // keep display
           email,
           passwordHash: "no-password",
           role: "user",
@@ -214,9 +227,7 @@ router.get("/", requireAuth, requireAdmin, async (req, res) => {
     ]);
 
     const sessionsByUser = {};
-    for (const r of sessionsAgg) {
-      sessionsByUser[r._id] = r;
-    }
+    for (const r of sessionsAgg) sessionsByUser[r._id] = r;
 
     // 8) Merge
     const enhanced = users.map((u) => {
@@ -256,14 +267,16 @@ router.patch("/:id/approve", requireAuth, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Support "virtual:<username>" too
+    // Support "virtual:<username>" too (case-insensitive)
     if (id.startsWith("virtual:")) {
       const username = id.slice("virtual:".length).trim();
       if (!username)
         return res.status(400).json({ message: "Invalid virtual id" });
 
+      const rx = new RegExp(`^${escapeRegex(username)}$`, "i");
+
       const user = await User.findOneAndUpdate(
-        { username },
+        { username: rx },
         { $set: { isApproved: true, status: "active" } },
         { new: true }
       ).lean();
@@ -292,22 +305,25 @@ router.delete("/:id", requireAuth, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // "virtual:<username>" delete
+    // "virtual:<username>" delete (case-insensitive)
     if (id.startsWith("virtual:")) {
       const username = id.slice("virtual:".length).trim();
       if (!username)
         return res.status(400).json({ message: "Invalid virtual id" });
 
-      // prevent re-auto-create from GameEntry usernames
+      const rx = new RegExp(`^${escapeRegex(username)}$`, "i");
+
+      // ✅ store deleted key lowercase to block future auto-create
+      const deletedKey = normUsernameKey(username);
       await DeletedUsername.updateOne(
-        { username },
-        { $set: { username } },
+        { username: deletedKey },
+        { $set: { username: deletedKey } },
         { upsert: true }
       );
 
-      await LoginSession.deleteMany({ username });
-      await GameEntry.deleteMany({ username });
-      await User.deleteOne({ username });
+      await LoginSession.deleteMany({ username: rx });
+      await GameEntry.deleteMany({ username: rx });
+      await User.deleteOne({ username: rx });
 
       return res.json({
         message: `Deleted virtual user "${username}" (and related data).`,
@@ -319,11 +335,12 @@ router.delete("/:id", requireAuth, requireAdmin, async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
 
     const username = user.username ? String(user.username).trim() : "";
+    const deletedKey = normUsernameKey(username);
 
     if (username) {
       await DeletedUsername.updateOne(
-        { username },
-        { $set: { username } },
+        { username: deletedKey },
+        { $set: { username: deletedKey } },
         { upsert: true }
       );
 
