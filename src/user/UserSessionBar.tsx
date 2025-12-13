@@ -12,6 +12,10 @@ interface UserSessionBarProps {
 
 const LOGIN_API_BASE = "/api/logins";
 
+// ✅ Validate Mongo ObjectId (prevents bad sessionId causing backend CastError)
+const isValidObjectId = (v: any) =>
+  typeof v === "string" && /^[a-fA-F0-9]{24}$/.test(v);
+
 const UserSessionBar: React.FC<UserSessionBarProps> = ({
   username,
   email,
@@ -59,7 +63,10 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
       const sameUser = storedUser === username;
 
       if ((sameEmail || sameUser) && storedSignInAt) {
-        setSessionId(storedId);
+        // ✅ only restore sessionId if valid
+        const safeId = storedId && isValidObjectId(storedId) ? storedId : null;
+
+        setSessionId(safeId);
         setSignInDateTime(new Date(storedSignInAt));
         setIsSignedIn(true);
 
@@ -112,7 +119,6 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
 
   // 🟢 SIGN IN handler (work session)
   const handleSignIn = useCallback(async () => {
-    // ✅ Hard guards (not dependent on state timing)
     if (signInLockRef.current) return;
     if (loading) return;
     if (isSignedIn || sessionId) return;
@@ -135,8 +141,9 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
         signInAt,
       });
 
+      // ✅ backend returns _id via formatSession
       const id =
-        data.id || data._id || data.sessionId || data.session_id || null;
+        data._id || data.id || data.sessionId || data.session_id || null;
 
       // ✅ canonical identity from backend
       const canonicalUsername = data.username || username;
@@ -156,7 +163,6 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
       setIsSignedIn(true);
       setSignInDateTime(new Date(signInAt));
 
-      // ✅ update displayed identity
       setDisplayUser(canonicalUsername);
       setDisplayEmail(canonicalEmail);
 
@@ -172,7 +178,6 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
 
   // 🔴 SIGN OUT handler: ends work session + logs out app
   const handleConfirmSignOut = useCallback(async () => {
-    // ✅ Hard guards
     if (signOutLockRef.current) return;
     if (loading) return;
 
@@ -180,22 +185,34 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
       signOutLockRef.current = true;
       setLoading(true);
 
-      if (sessionId) {
+      const sid = sessionId;
+
+      // ✅ only call backend if sessionId is valid
+      if (sid && isValidObjectId(sid)) {
         await apiClient.post(`${LOGIN_API_BASE}/end`, {
-          sessionId,
+          sessionId: sid,
           signOutAt: new Date().toISOString(),
         });
+      } else {
+        console.warn("Skip /api/logins/end (invalid sessionId):", sid);
       }
 
+      // ✅ always clear local
       setIsSignedIn(false);
       setSignInDateTime(null);
       setSessionId(null);
       localStorage.removeItem("userSession");
+
       onSessionChange?.(false);
       onLogout();
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to sign out:", err);
-      alert("Failed to end session. Check console or backend.");
+      const status = err?.response?.status;
+      const data = err?.response?.data;
+      console.error("Sign out response:", { status, data });
+      alert(
+        data?.message || "Failed to end session. Check console or backend."
+      );
     } finally {
       setLoading(false);
       setShowConfirmLogout(false);
@@ -225,7 +242,6 @@ const UserSessionBar: React.FC<UserSessionBarProps> = ({
 
     checkAndLogout();
     const id = window.setInterval(checkAndLogout, 60 * 1000);
-
     return () => window.clearInterval(id);
   }, [isSignedIn, signInDateTime, handleConfirmSignOut]);
 

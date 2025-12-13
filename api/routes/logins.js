@@ -119,12 +119,21 @@ router.post("/start", async (req, res) => {
  * 🔴 POST /api/logins/end
  * Body: { sessionId, signOutAt? }
  */
+/**
+ * 🔴 POST /api/logins/end
+ * Body: { sessionId, signOutAt? }
+ */
 router.post("/end", async (req, res) => {
   try {
     const { sessionId, signOutAt } = req.body;
 
-    if (!sessionId) {
+    if (!sessionId || typeof sessionId !== "string") {
       return res.status(400).json({ message: "sessionId is required" });
+    }
+
+    // ✅ prevent CastError -> 500
+    if (!mongoose.Types.ObjectId.isValid(sessionId)) {
+      return res.status(400).json({ message: "Invalid sessionId" });
     }
 
     const session = await LoginSession.findById(sessionId);
